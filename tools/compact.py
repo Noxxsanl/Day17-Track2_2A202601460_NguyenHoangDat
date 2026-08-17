@@ -63,27 +63,42 @@ def main() -> int:
     n_src = len(list(SRC.glob("*.parquet")))
     print(f"  nguồn : {SRC}  ({n_src:,} file)")
 
-    # TODO(nhiệm vụ 4): hiện thực khung COPY ... TO ... ở phần docstring.
+    # partition_by = event_date: query lọc theo customer_name VÀ theo ngày;
+    # event_date chỉ có 14 giá trị phân biệt -> 14 thư mục, mỗi thư mục vài
+    # nghìn hàng. Partition theo customer_name (650 giá trị) sẽ tái tạo đúng
+    # small-file problem đang muốn sửa (650 thư mục, mỗi thư mục ~200 hàng).
     #
-    #   con.execute(f"""
-    #       copy (
-    #           select * from read_parquet('{SRC}/*.parquet')
-    #           order by ...
-    #       ) to '{DST}' (
-    #           format parquet,
-    #           partition_by (...),
-    #           overwrite_or_ignore,
-    #           row_group_size ...
-    #       )
-    #   """)
+    # order by (event_date, customer_name): trong mỗi partition ngày, xếp các
+    # hàng cùng customer_name liền nhau để min/max của mỗi row group chỉ phủ
+    # một dải hẹp customer_name -> lọc theo customer_name mới có tác dụng.
     #
-    # Sau đó kiểm tra không mất hàng nào:
-    #
-    #   assert <số row dataset cũ> == <số row dataset mới>
+    # row_group_size nhỏ hơn số hàng/ngày (~9.334): mặc định 122.880 khiến cả
+    # ngày gói gọn trong MỘT row group duy nhất -> min/max của row group đó
+    # phủ toàn bộ 650 customer, không lọc được gì. Chọn 2.000 để mỗi ngày có
+    # nhiều row group, mỗi row group chỉ phủ một dải hẹp customer_name.
+    con.execute(f"""
+        copy (
+            select * from read_parquet('{SRC}/*.parquet')
+            order by event_date, customer_name
+        ) to '{DST}' (
+            format parquet,
+            partition_by (event_date),
+            overwrite_or_ignore,
+            row_group_size 2000
+        )
+    """)
 
-    print("\n  tools/compact.py chưa được hiện thực — đây là nhiệm vụ 4.")
-    print("  Mở file này, đọc phần KHUNG THỰC HIỆN ở đầu file và điền vào TODO.")
-    print("  Hướng dẫn từng bước: GUIDE.md mục 4.\n")
+    n_src_rows = con.execute(
+        f"select count(*) from read_parquet('{SRC}/*.parquet')"
+    ).fetchone()[0]
+    n_dst_rows = con.execute(
+        f"select count(*) from read_parquet('{DST}/**/*.parquet', hive_partitioning = true)"
+    ).fetchone()[0]
+    assert n_src_rows == n_dst_rows, f"mất hàng: {n_src_rows} -> {n_dst_rows}"
+
+    n_dst_files = len(list(DST.rglob("*.parquet")))
+    print(f"  đích  : {DST}  ({n_dst_files:,} file)")
+    print(f"  hàng  : {n_src_rows:,} -> {n_dst_rows:,}  (khớp)")
     return 0
 
 
